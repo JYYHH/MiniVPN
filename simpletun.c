@@ -115,6 +115,57 @@ int cwrite(int fd, char *buf, int n){
   return nwrite;
 }
 
+int cread_udp(int fd, char *buf, int n, struct sockaddr_in *addr_pt, socklen_t *len_pt){
+  
+  int nread;
+
+  // printf("Recv from: %x\n", addr_pt->sin_addr.s_addr);
+
+  if((nread = recvfrom(
+                fd,
+                buf, 
+                n, 
+                0, 
+                (struct sockaddr *)addr_pt, 
+                len_pt
+              )
+      ) < 0
+    ){
+    perror("Reading data");
+    exit(1);
+  }
+  return nread;
+}
+
+int cwrite_udp(int fd, char *buf, int n, struct sockaddr_in *addr_pt, socklen_t *len_pt){
+  
+  int nread;
+
+  // printf("Send to: %x\n", addr_pt->sin_addr.s_addr);
+
+  if((nread = sendto(
+                fd,
+                buf, 
+                n, 
+                0, 
+                (struct sockaddr *)addr_pt, 
+                sizeof(*addr_pt)
+              )
+      ) < 0
+    ){
+    perror("Writing data");
+    exit(1);
+  }
+  return nread;
+}
+
+struct sockaddr_in *select_addr(int cliserv, struct sockaddr_in *local, struct sockaddr_in *remote){
+  if (cliserv == CLIENT)
+    return remote;
+  else 
+    return local;
+}
+
 /**************************************************************************
  * read_n: ensures we read exactly n bytes, and puts those into "buf".    *
  *         (unless EOF, of course)                                        *
@@ -125,6 +176,21 @@ int read_n(int fd, char *buf, int n) {
 
   while(left > 0) {
     if ((nread = cread(fd, buf, left))==0){
+      return 0 ;      
+    }else {
+      left -= nread;
+      buf += nread;
+    }
+  }
+  return n;  
+}
+
+int read_n_udp(int fd, char *buf, int n, struct sockaddr_in *addr_pt, socklen_t *len_pt) {
+
+  int nread, left = n;
+
+  while(left > 0) {
+    if ((nread = cread_udp(fd, buf, left, addr_pt, len_pt))==0){
       return 0 ;      
     }else {
       left -= nread;
@@ -259,7 +325,7 @@ int main(int argc, char *argv[]) {
 
   do_debug("Successfully connected to interface %s\n", if_name);
 
-  if ( (sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+  if ((sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
     perror("socket()");
     exit(1);
   }
@@ -273,14 +339,8 @@ int main(int argc, char *argv[]) {
     remote.sin_addr.s_addr = inet_addr(remote_ip);
     remote.sin_port = htons(port);
 
-    /* connection request */
-    if (connect(sock_fd, (struct sockaddr*) &remote, sizeof(remote)) < 0){
-      perror("connect()");
-      exit(1);
-    }
-
     net_fd = sock_fd;
-    do_debug("CLIENT: Connected to server %s\n", inet_ntoa(remote.sin_addr));
+    do_debug("CLIENT: (No need to) Connected to server %s\n", inet_ntoa(remote.sin_addr));
     
   } else {
     /* Server, wait for connections */
@@ -299,21 +359,9 @@ int main(int argc, char *argv[]) {
       perror("bind()");
       exit(1);
     }
-    
-    if (listen(sock_fd, 5) < 0){
-      perror("listen()");
-      exit(1);
-    }
-    
-    /* wait for connection request */
-    remotelen = sizeof(remote);
-    memset(&remote, 0, remotelen);
-    if ((net_fd = accept(sock_fd, (struct sockaddr*)&remote, &remotelen)) < 0){
-      perror("accept()");
-      exit(1);
-    }
 
-    do_debug("SERVER: Client connected from %s\n", inet_ntoa(remote.sin_addr));
+    net_fd = sock_fd;
+    do_debug("SERVER: (No need to) Client connected from %s\n", inet_ntoa(remote.sin_addr));
   }
   
   /* use select() to handle two descriptors at once */
@@ -347,8 +395,9 @@ int main(int argc, char *argv[]) {
 
       /* write length + packet */
       plength = htons(nread);
-      nwrite = cwrite(net_fd, (char *)&plength, sizeof(plength));
-      nwrite = cwrite(net_fd, buffer, nread);
+
+      nwrite = cwrite_udp(net_fd, (char *)&plength, sizeof(plength), &remote, &remotelen);
+      nwrite = cwrite_udp(net_fd, buffer, nread, &remote, &remotelen);
       
       do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net, nwrite);
     }
@@ -358,7 +407,7 @@ int main(int argc, char *argv[]) {
        * We need to read the length first, and then the packet */
 
       /* Read length */      
-      nread = read_n(net_fd, (char *)&plength, sizeof(plength));
+      nread = read_n_udp(net_fd, (char *)&plength, sizeof(plength), &remote, &remotelen);
       if(nread == 0) {
         /* ctrl-c at the other end */
         break;
@@ -367,7 +416,7 @@ int main(int argc, char *argv[]) {
       net2tap++;
 
       /* read packet */
-      nread = read_n(net_fd, buffer, ntohs(plength));
+      nread = read_n_udp(net_fd, buffer, ntohs(plength), &remote, &remotelen);
       do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap, nread);
 
       /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */ 
