@@ -1,6 +1,7 @@
 #include <openssl/aes.h>
 #include <openssl/rand.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000   
@@ -25,5 +26,11 @@ void aes_encrypt(unsigned char *plaintext, int *len);
 void aes_decrypt(unsigned char *ciphertext, int *len);
 void end_AES();
 
+/*
+    Begin of My HMAC-SHA256 implementation
+*/
+void get_HMAC_sha256(unsigned char *data, int len, unsigned char *hash_v, int *hash_len_pt);
+void append_HASH(unsigned char *org_data, int *len_pt);
+int check_HASH_and_recover(unsigned char *data_with_hash, int *len_pt);
 
 

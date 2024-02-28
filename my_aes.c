@@ -5,6 +5,7 @@
 
 // context of encrypt & decrypt
 EVP_CIPHER_CTX *en, *de;
+// For SHA256, block_size = 256-bits, so size(key) = size(iv) = 32 Bytes
 unsigned char *key, *iv;
 
 void init_key_iv(){
@@ -15,11 +16,11 @@ void init_key_iv(){
 }
 
 void set_key(const unsigned char *val_pt){
-    memcpy(key, val_pt, 32);
+  memcpy(key, val_pt, 32);
 }
 
 void set_iv(const unsigned char *val_pt){
-    memcpy(iv, val_pt, 32);
+  memcpy(iv, val_pt, 32);
 }
 
 void init_AES(){
@@ -33,6 +34,7 @@ void init_AES(){
 
 void aes_encrypt(unsigned char *plaintext, int *len){
     // ensure the upperbound_length
+      // AES_BLOCK_SIZE = 32 (Bytes)
   int cipher_len = *len + AES_BLOCK_SIZE, additional_len = 0;
   unsigned char *ciphertext = (unsigned char *) malloc(cipher_len);
 

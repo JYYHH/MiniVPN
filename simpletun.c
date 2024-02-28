@@ -358,7 +358,7 @@ int main(int argc, char *argv[]) {
     Here to init the encryption
   */
   init_key_iv();
-    // will solve the key and iv commu later
+    // will solve the key and iv commu later (TODO: key & iv)
   set_key("abcd4321abcd4321abcd4321abcd4321");
   set_iv("00000000000000000000000000000000");
   init_AES();
@@ -387,7 +387,7 @@ int main(int argc, char *argv[]) {
     if(FD_ISSET(tap_fd, &rd_set)){
       /* data from tun/tap:
           first read it,
-          then encrypt it,
+          then encrypt it, together with hashing-append,
           finally write it into the network
       */
       
@@ -396,8 +396,10 @@ int main(int argc, char *argv[]) {
       tap2net++;
       do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", tap2net, nread);
 
-      // encrypt
+      // encrypt & hash_append
       aes_encrypt(buffer, &nread);
+        // nread at most increases 32 here
+      append_HASH(buffer, &nread);
 
       // write into network
       plength = htons(nread);
@@ -410,7 +412,7 @@ int main(int argc, char *argv[]) {
     if(FD_ISSET(net_fd, &rd_set)){
       /* data from the network:
         first read it
-        then decrypt
+        then check whether the hash is right, together with decrypting,
         finally write it into tun/tap
       */
 
@@ -424,9 +426,17 @@ int main(int argc, char *argv[]) {
 
       // read
       nread = read_n_udp(net_fd, buffer, ntohs(plength), &remote, &remotelen);
+      if (nread != ntohs(plength)){
+        printf("Length inconsistent!\n");
+        break;
+      }
       do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap, nread);
 
       // decrypt
+      if (check_HASH_and_recover(buffer, &nread) == 0){
+        printf("Data's integrity is broken!\n");
+        exit(4);
+      }
       aes_decrypt(buffer, &nread);
 
       /* write into tun/tap */ 
