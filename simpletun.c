@@ -37,17 +37,7 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <stdarg.h>
-
-/* buffer for reading from tun/tap interface, must be >= 1500 */
-#define BUFSIZE 2000   
-#define CLIENT 0
-#define SERVER 1
-#define PORT 55555
-
-/* some common lengths */
-#define IP_HDR_LEN 20
-#define ETH_HDR_LEN 14
-#define ARP_PKT_LEN 28
+#include "com_h.h"
 
 int debug;
 char *progname;
@@ -249,8 +239,8 @@ int main(int argc, char *argv[]) {
   int flags = IFF_TUN;
   char if_name[IFNAMSIZ] = "";
   int header_len = IP_HDR_LEN;
-  int maxfd;
-  uint16_t nread, nwrite, plength;
+  int maxfd, nread;
+  uint16_t nwrite, plength;
 //  uint16_t total_len, ethertype;
   char buffer[BUFSIZE];
   struct sockaddr_in local, remote;
@@ -363,6 +353,15 @@ int main(int argc, char *argv[]) {
     net_fd = sock_fd;
     do_debug("SERVER: (No need to) Client connected from %s\n", inet_ntoa(remote.sin_addr));
   }
+
+  /*
+    Here to init the encryption
+  */
+  init_key_iv();
+    // will solve the key and iv commu later
+  set_key("abcd4321abcd4321abcd4321abcd4321");
+  set_iv("00000000000000000000000000000000");
+  init_AES();
   
   /* use select() to handle two descriptors at once */
   maxfd = (tap_fd > net_fd)?tap_fd:net_fd;
@@ -386,16 +385,22 @@ int main(int argc, char *argv[]) {
     }
 
     if(FD_ISSET(tap_fd, &rd_set)){
-      /* data from tun/tap: just read it and write it to the network */
+      /* data from tun/tap:
+          first read it,
+          then encrypt it,
+          finally write it into the network
+      */
       
+      // read
       nread = cread(tap_fd, buffer, BUFSIZE);
-
       tap2net++;
       do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", tap2net, nread);
 
-      /* write length + packet */
-      plength = htons(nread);
+      // encrypt
+      aes_encrypt(buffer, &nread);
 
+      // write into network
+      plength = htons(nread);
       nwrite = cwrite_udp(net_fd, (char *)&plength, sizeof(plength), &remote, &remotelen);
       nwrite = cwrite_udp(net_fd, buffer, nread, &remote, &remotelen);
       
@@ -403,8 +408,11 @@ int main(int argc, char *argv[]) {
     }
 
     if(FD_ISSET(net_fd, &rd_set)){
-      /* data from the network: read it, and write it to the tun/tap interface. 
-       * We need to read the length first, and then the packet */
+      /* data from the network:
+        first read it
+        then decrypt
+        finally write it into tun/tap
+      */
 
       /* Read length */      
       nread = read_n_udp(net_fd, (char *)&plength, sizeof(plength), &remote, &remotelen);
@@ -412,18 +420,21 @@ int main(int argc, char *argv[]) {
         /* ctrl-c at the other end */
         break;
       }
-
       net2tap++;
 
-      /* read packet */
+      // read
       nread = read_n_udp(net_fd, buffer, ntohs(plength), &remote, &remotelen);
       do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap, nread);
 
-      /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */ 
+      // decrypt
+      aes_decrypt(buffer, &nread);
+
+      /* write into tun/tap */ 
       nwrite = cwrite(tap_fd, buffer, nread);
       do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n", net2tap, nwrite);
     }
   }
   
+  end_AES();
   return(0);
 }
