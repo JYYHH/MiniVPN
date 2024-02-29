@@ -149,13 +149,6 @@ int cwrite_udp(int fd, char *buf, int n, struct sockaddr_in *addr_pt, socklen_t 
   return nread;
 }
 
-struct sockaddr_in *select_addr(int cliserv, struct sockaddr_in *local, struct sockaddr_in *remote){
-  if (cliserv == CLIENT)
-    return remote;
-  else 
-    return local;
-}
-
 /**************************************************************************
  * read_n: ensures we read exactly n bytes, and puts those into "buf".    *
  *         (unless EOF, of course)                                        *
@@ -246,7 +239,7 @@ int main(int argc, char *argv[]) {
   struct sockaddr_in local, remote;
   char remote_ip[16] = "";
   unsigned short int port = PORT;
-  int sock_fd, net_fd, optval = 1;
+  int sock_fd, net_fd, optval = 1, sock_TCP;
   socklen_t remotelen;
   int cliserv = -1;    /* must be specified on cmd line */
   unsigned long int tap2net = 0, net2tap = 0;
@@ -319,40 +312,90 @@ int main(int argc, char *argv[]) {
     perror("socket()");
     exit(1);
   }
+  if ((sock_TCP = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    perror("socket()");
+    exit(1);
+  }
 
+
+  /*
+    TCP part
+  */
+  memset(&local, 0, sizeof(local));
+  local.sin_family = AF_INET;
+  local.sin_addr.s_addr = htonl(INADDR_ANY);
+  local.sin_port = htons(port);
   if(cliserv==CLIENT){
-    /* Client, try to connect to server */
-
-    /* assign the destination address */
     memset(&remote, 0, sizeof(remote));
     remote.sin_family = AF_INET;
     remote.sin_addr.s_addr = inet_addr(remote_ip);
     remote.sin_port = htons(port);
+    if (connect(sock_TCP, (struct sockaddr*) &remote, sizeof(remote)) < 0){
+      perror("connect()");
+      exit(1);
+    }
+    net_fd = sock_TCP;
+    do_debug("CLIENT: Connected to server %s\n", inet_ntoa(remote.sin_addr));
 
-    net_fd = sock_fd;
-    do_debug("CLIENT: (No need to) Connected to server %s\n", inet_ntoa(remote.sin_addr));
-    
-  } else {
-    /* Server, wait for connections */
-
-    /* avoid EADDRINUSE error on bind() */
-    if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
+  } else{
+    if(setsockopt(sock_TCP, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
       perror("setsockopt()");
       exit(1);
     }
-    
-    memset(&local, 0, sizeof(local));
-    local.sin_family = AF_INET;
-    local.sin_addr.s_addr = htonl(INADDR_ANY);
-    local.sin_port = htons(port);
-    if (bind(sock_fd, (struct sockaddr*) &local, sizeof(local)) < 0){
+    if (bind(sock_TCP, (struct sockaddr*) &local, sizeof(local)) < 0){
       perror("bind()");
       exit(1);
     }
+    if (listen(sock_TCP, 5) < 0){
+      perror("listen()");
+      exit(1);
+    }
+    
+    /* wait for connection request */
+    remotelen = sizeof(remote);
+    memset(&remote, 0, remotelen);
+      // note that accept means the TCP server will not only provide a brand-new fd, 
+        // but a new PORT to support the service as well.
+    if ((net_fd = accept(sock_TCP, (struct sockaddr*)&remote, &remotelen)) < 0){
+      perror("accept()");
+      exit(1);
+    }
 
-    net_fd = sock_fd;
-    do_debug("SERVER: (No need to) Client connected from %s\n", inet_ntoa(remote.sin_addr));
+    do_debug("SERVER: Client connected from %s\n", inet_ntoa(remote.sin_addr));
   }
+
+  /*
+    Key Exchange: Use "net_fd" to communicate
+  */
+
+
+
+  
+  /*
+   UDP part
+  */
+  // printf("%x %x %d %d\n", remote.sin_addr.s_addr, local.sin_addr.s_addr, remote.sin_family, remote.sin_port);
+  
+  if(cliserv==SERVER)
+  // recover the original port for the UDP usage
+    remote.sin_port = htons(port);
+
+  if(cliserv==CLIENT)
+    close(sock_TCP);
+  else{
+    close(sock_TCP);
+    close(net_fd);
+  }
+  net_fd = sock_fd;
+  if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
+    perror("setsockopt()");
+    exit(1);
+  }
+  if(bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
+    perror("bind()");
+    exit(1);
+  }
+
 
   /*
     Here to init the encryption
