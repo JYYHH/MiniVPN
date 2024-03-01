@@ -227,7 +227,6 @@ void usage(void) {
 }
 
 int main(int argc, char *argv[]) {
-
   int tap_fd, option;
   int flags = IFF_TUN;
   char if_name[IFNAMSIZ] = "";
@@ -301,7 +300,7 @@ int main(int argc, char *argv[]) {
   }
 
   /* initialize tun/tap interface */
-  if ( (tap_fd = tun_alloc(if_name, flags | IFF_NO_PI)) < 0 ) {
+  if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI)) < 0) {
     my_err("Error connecting to tun/tap interface %s!\n", if_name);
     exit(1);
   }
@@ -317,96 +316,32 @@ int main(int argc, char *argv[]) {
     exit(1);
   }
 
-
   /*
-    TCP part
+    typical TCP routine
   */
-  memset(&local, 0, sizeof(local));
-  local.sin_family = AF_INET;
-  local.sin_addr.s_addr = htonl(INADDR_ANY);
-  local.sin_port = htons(port);
+  set_sockaddr(&local, htonl(INADDR_ANY), htons(port));
+  printf("%d %d %d %d\n", AF_INET, local.sin_family, local.sin_addr.s_addr, local.sin_port);
   if(cliserv==CLIENT){
-    memset(&remote, 0, sizeof(remote));
-    remote.sin_family = AF_INET;
-    remote.sin_addr.s_addr = inet_addr(remote_ip);
-    remote.sin_port = htons(port);
-    if (connect(sock_TCP, (struct sockaddr*) &remote, sizeof(remote)) < 0){
-      perror("connect()");
-      exit(1);
-    }
-    net_fd = sock_TCP;
-    do_debug("CLIENT: Connected to server %s\n", inet_ntoa(remote.sin_addr));
-
+    net_fd = client_connect_2_server(
+      sock_TCP,
+      &remote,
+      remote_ip,
+      port
+    );
   } else{
-    if(setsockopt(sock_TCP, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
-      perror("setsockopt()");
-      exit(1);
-    }
-    if (bind(sock_TCP, (struct sockaddr*) &local, sizeof(local)) < 0){
-      perror("bind()");
-      exit(1);
-    }
-    if (listen(sock_TCP, 5) < 0){
-      perror("listen()");
-      exit(1);
-    }
-    
-    /* wait for connection request */
-    remotelen = sizeof(remote);
-    memset(&remote, 0, remotelen);
-      // note that accept means the TCP server will not only provide a brand-new fd, 
-        // but a new PORT to support the service as well.
-    if ((net_fd = accept(sock_TCP, (struct sockaddr*)&remote, &remotelen)) < 0){
-      perror("accept()");
-      exit(1);
-    }
-
-    do_debug("SERVER: Client connected from %s\n", inet_ntoa(remote.sin_addr));
+    net_fd = server_wait_4_client(
+      sock_TCP,
+      &local,
+      &remote,
+      &remotelen
+    );
   }
 
 
-  /*
-    SSL & Key exchange
-  */
-  init_ssl_ctx();
-  printf("%s side initializes ssl context properly\n", cliserv == SERVER ? "Server" : "Client");
-  // Both sides need certification
-  if (cliserv == SERVER)
-    configure_ssl_ctx("server.crt", "server.key");
-  else
-    configure_ssl_ctx("client.crt", "client.key");
-  printf("%s side configures ssl context properly\n", cliserv == SERVER ? "Server" : "Client");
-  // pass the previously built TCP connection's fd to init the ssl connection
-  init_ssl(net_fd);
-  My_SSL_Connect(cliserv);
-
-    // After building the SSL connection, we can directly exchange the key in a secure fashion
-  init_key_iv();
-  
-  if (cliserv == CLIENT){
-    RAND_bytes(buffer, 32 * 2); // key + iv
-    // set local key and iv
-    set_key((unsigned char *)buffer);
-    set_iv(((unsigned char *)buffer) + 32);
-    printf("Client sets the key/iv OK\n");
-    // send to the server
-    My_SSL_write(buffer, 32 * 2);
-  }
-  else{
-    // recv msg from client
-    My_SSL_read(buffer, 32 * 2);
-    // set remote key and iv
-    set_key((unsigned char *)buffer);
-    set_iv(((unsigned char *)buffer) + 32);
-    printf("Server sets the key/iv OK\n");
-  }
-
-  // printf("%lx %lx\n", *((unsigned long *)buffer), *((unsigned long *)buffer + 4));
-
-  // clear the buffer
-  memset(buffer, 0, 32 * 2);
-  // end the ssl session (TODO: break control)
-  end_ssl();
+  if (cliserv == CLIENT)
+    client_in_key_exchange(net_fd, buffer);
+  else 
+    server_in_key_exchange(net_fd, buffer);
 
   
   /*
