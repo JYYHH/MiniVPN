@@ -5,12 +5,16 @@
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000   
 #define CLIENT 0
 #define SERVER 1
 #define PORT 55555
+#define PORTUDP 55556
 
 /* some common lengths */
 #define IP_HDR_LEN 20
@@ -44,6 +48,8 @@ void init_ssl_ctx();
 void configure_ssl_ctx(const char *crt_path, const char *key_path);
 void init_ssl(int socket_num);
 int My_SSL_Connect(int cliserv);
+void My_SSL_write(char *msg, int len);
+void My_SSL_read(char *msg, int len);
 void end_ssl();
 
 

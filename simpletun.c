@@ -379,10 +379,35 @@ int main(int argc, char *argv[]) {
   // pass the previously built TCP connection's fd to init the ssl connection
   init_ssl(net_fd);
   My_SSL_Connect(cliserv);
-  end_ssl();
-  printf("SSL Already (successfully) ends\n");
 
-  return 0;
+    // After building the SSL connection, we can directly exchange the key in a secure fashion
+  init_key_iv();
+  
+  if (cliserv == CLIENT){
+    RAND_bytes(buffer, 32 * 2); // key + iv
+    // set local key and iv
+    set_key((unsigned char *)buffer);
+    set_iv(((unsigned char *)buffer) + 32);
+    printf("Client sets the key/iv OK\n");
+    // send to the server
+    My_SSL_write(buffer, 32 * 2);
+  }
+  else{
+    // recv msg from client
+    My_SSL_read(buffer, 32 * 2);
+    // set remote key and iv
+    set_key((unsigned char *)buffer);
+    set_iv(((unsigned char *)buffer) + 32);
+    printf("Server sets the key/iv OK\n");
+  }
+
+  // printf("%lx %lx\n", *((unsigned long *)buffer), *((unsigned long *)buffer + 4));
+
+  // clear the buffer
+  memset(buffer, 0, 32 * 2);
+  // end the ssl session (TODO: break control)
+  end_ssl();
+
   
   /*
    UDP part
@@ -413,10 +438,6 @@ int main(int argc, char *argv[]) {
   /*
     Here to init the encryption
   */
-  init_key_iv();
-    // will solve the key and iv commu later (TODO: key & iv)
-  set_key("abcd4321abcd4321abcd4321abcd4321");
-  set_iv("00000000000000000000000000000000");
   init_AES();
   
   /* use select() to handle two descriptors at once */
@@ -472,6 +493,8 @@ int main(int argc, char *argv[]) {
         finally write it into tun/tap
       */
 
+      int whether_loss_pkg = 0;
+
       /* Read length */      
       nread = read_n_udp(net_fd, (char *)&plength, sizeof(plength), &remote, &remotelen);
       if(nread == 0) {
@@ -490,14 +513,20 @@ int main(int argc, char *argv[]) {
 
       // decrypt
       if (check_HASH_and_recover(buffer, &nread) == 0){
-        printf("Data's integrity is broken!\n");
-        exit(4);
+        printf("Data's integrity is broken (for some reason)! But we'll ignore this pkg and hope the upper layer (TCP used by the app-layer which use this tunnel) will fix this!\n");
+        whether_loss_pkg = 1;
+        // exit(4);
       }
       aes_decrypt(buffer, &nread);
 
-      /* write into tun/tap */ 
-      nwrite = cwrite(tap_fd, buffer, nread);
-      do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n", net2tap, nwrite);
+      if (whether_loss_pkg == 0){
+        /* write into tun/tap */ 
+        nwrite = cwrite(tap_fd, buffer, nread);
+        do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n", net2tap, nwrite);
+      }
+      else{
+        printf("NET2TAP %lu: %d bytes from network are thrown away...\n", net2tap, nwrite);
+      }
     }
   }
   
