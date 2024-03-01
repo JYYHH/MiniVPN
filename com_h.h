@@ -14,7 +14,7 @@
 #define CLIENT 0
 #define SERVER 1
 #define PORT 55555
-#define PORTUDP 55556
+#define PORTUDP 55554
 
 /* some common lengths */
 #define IP_HDR_LEN 20

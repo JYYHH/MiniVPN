@@ -78,7 +78,6 @@ void server_in_key_exchange(int net_fd, char *buffer){
   init_ssl(net_fd);
   My_SSL_Connect(SERVER);
   // After building the SSL connection, we can directly exchange the key in a secure fashion
-  init_key_iv();
   
 // Server: recv the key/iv from the client
   // recv msg from client
@@ -90,8 +89,6 @@ void server_in_key_exchange(int net_fd, char *buffer){
     // printf("%lx %lx\n", *((unsigned long *)buffer), *((unsigned long *)buffer + 4));
   // clear the buffer
   memset(buffer, 0, 32 * 2);
-  // end the ssl session (TODO: break control)
-  end_ssl();
 }
 
 void client_in_key_exchange(int net_fd, char *buffer){
@@ -116,6 +113,4 @@ void client_in_key_exchange(int net_fd, char *buffer){
   My_SSL_write(buffer, 32 * 2);
   // clear the buffer
   memset(buffer, 0, 32 * 2);
-  // end the ssl session (TODO: break control)
-  end_ssl();
 }

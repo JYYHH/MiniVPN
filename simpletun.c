@@ -35,6 +35,7 @@
 #include <arpa/inet.h> 
 #include <sys/select.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <stdarg.h>
 #include "com_h.h"
@@ -307,64 +308,99 @@ int main(int argc, char *argv[]) {
 
   do_debug("Successfully connected to interface %s\n", if_name);
 
-  if ((sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-    perror("socket()");
+  // Before each process's starting, we should allocate the memory for the key and iv, 
+    //because they'll be seperated into different process and belongs to different address.
+  init_key_iv();
+
+  int pipefd[2]; // be used to Communicate between TCP process and UDP process
+  if (pipe(pipefd) == -1){
+    perror("pipe");
     exit(1);
   }
-  if ((sock_TCP = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-    perror("socket()");
-    exit(1);
+
+  int child_pid = fork();
+  if (child_pid > 0){
+    // we are in father process
+      // close the read pipe fd, cause the father does not need the child's feedback (lol)
+    close(pipefd[0]);
+
+    /*
+      typical TCP routine
+    */
+    if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+      perror("socket()");
+      exit(1);
+    }
+    set_sockaddr(&local, htonl(INADDR_ANY), htons(port));
+    if (cliserv == CLIENT){
+      net_fd = client_connect_2_server(
+        sock_fd,
+        &remote,
+        remote_ip,
+        port
+      );
+    }else{
+      net_fd = server_wait_4_client(
+        sock_fd,
+        &local,
+        &remote,
+        &remotelen
+      );
+    }
+
+    // SERVER: tell the child the remote address of client
+    if (cliserv == SERVER)
+      cwrite(pipefd[1], (char *)&remote, sizeof(remote));
+    
+    // Key exachange
+    if (cliserv == CLIENT)
+      client_in_key_exchange(net_fd, buffer);
+    else 
+      server_in_key_exchange(net_fd, buffer);
+    
+    // Blocking area...
+    My_SSL_read(buffer, 1); // impossible to read, just to block until client's crash..
+
+    if (cliserv == SERVER){
+      end_ssl();
+      if (kill(child_pid, SIGKILL) == -1) {
+        perror("kill");
+        exit(1);
+      }
+      int status;
+      waitpid(child_pid, &status, 0);
+    }
+
+    return 0;
   }
-
-  /*
-    typical TCP routine
-  */
-  set_sockaddr(&local, htonl(INADDR_ANY), htons(port));
-  printf("%d %d %d %d\n", AF_INET, local.sin_family, local.sin_addr.s_addr, local.sin_port);
-  if(cliserv==CLIENT){
-    net_fd = client_connect_2_server(
-      sock_TCP,
-      &remote,
-      remote_ip,
-      port
-    );
-  } else{
-    net_fd = server_wait_4_client(
-      sock_TCP,
-      &local,
-      &remote,
-      &remotelen
-    );
-  }
-
-
-  if (cliserv == CLIENT)
-    client_in_key_exchange(net_fd, buffer);
-  else 
-    server_in_key_exchange(net_fd, buffer);
-
   
   /*
    UDP part
   */
-  // printf("%x %x %d %d\n", remote.sin_addr.s_addr, local.sin_addr.s_addr, remote.sin_family, remote.sin_port);
+  // we are in child process
+    // close the write pipe fd, cause the child has no right to talk to father (lol)
+  close(pipefd[1]);
   
-  if(cliserv==SERVER)
-  // recover the original port for the UDP usage
-    remote.sin_port = htons(port);
-
-  if(cliserv==CLIENT)
-    close(sock_TCP);
-  else{
-    close(sock_TCP);
-    close(net_fd);
+  if ((sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0){
+    perror("socket()");
+    exit(1);
   }
+  set_sockaddr(&local, htonl(INADDR_ANY), htons(PORTUDP));
+
+  if (cliserv == CLIENT)
+    set_sockaddr(&remote, inet_addr(remote_ip), htons(PORTUDP));
+  else{
+    cread(pipefd[0], (char *)&remote, sizeof(remote));
+    // recover the original port for the UDP usage, because it's already modified by the TCP / TCP&UDP don't use same port
+    remote.sin_port = htons(PORTUDP);
+  }
+
   net_fd = sock_fd;
-  if(setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
+  if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
     perror("setsockopt()");
     exit(1);
   }
-  if(bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
+  if (bind(sock_fd, (struct sockaddr*)&local, sizeof(local)) < 0){
     perror("bind()");
     exit(1);
   }
@@ -391,12 +427,12 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
-    if (ret < 0) {
+    if (ret < 0){
       perror("select()");
       exit(1);
     }
 
-    if(FD_ISSET(tap_fd, &rd_set)){
+    if (FD_ISSET(tap_fd, &rd_set)){
       /* data from tun/tap:
           first read it,
           then encrypt it, together with hashing-append,
@@ -421,7 +457,7 @@ int main(int argc, char *argv[]) {
       do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net, nwrite);
     }
 
-    if(FD_ISSET(net_fd, &rd_set)){
+    if (FD_ISSET(net_fd, &rd_set)){
       /* data from the network:
         first read it
         then check whether the hash is right, together with decrypting,
@@ -432,7 +468,7 @@ int main(int argc, char *argv[]) {
 
       /* Read length */      
       nread = read_n_udp(net_fd, (char *)&plength, sizeof(plength), &remote, &remotelen);
-      if(nread == 0) {
+      if (nread == 0) {
         /* ctrl-c at the other end */
         break;
       }
