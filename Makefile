@@ -1,8 +1,8 @@
 HEADER = com_h.h
-FLAGS = -lcrypto -o
+FLAGS = -lssl -lcrypto -o
 
-normal: $(HEADER) simpletun.c my_aes.c my_mac.c
-		gcc simpletun.c my_aes.c my_mac.c $(FLAGS) simpletun 
+normal: $(HEADER) simpletun.c my_aes.c my_mac.c my_ssl.c
+		gcc simpletun.c my_aes.c my_mac.c my_ssl.c $(FLAGS) simpletun 
 test_aes: $(HEADER) test_aes.c my_aes.c
 		gcc test_aes.c my_aes.c $(FLAGS) test_aes 
 clean: 

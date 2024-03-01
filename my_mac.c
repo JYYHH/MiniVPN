@@ -5,7 +5,7 @@
 
 extern unsigned char *key;
 // we share the same key as the AES encryption algorithm
-    // since the keys are all 256-bits = 32 Bytes
+  // since the keys are all 256-bits = 32 Bytes
 
 void get_HMAC_sha256(unsigned char *data, int len, unsigned char *hash_v, int *hash_len_pt){
   HMAC_CTX *ctx = (HMAC_CTX *) malloc(sizeof(HMAC_CTX));

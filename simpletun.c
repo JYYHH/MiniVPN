@@ -227,7 +227,7 @@ void usage(void) {
 }
 
 int main(int argc, char *argv[]) {
-  
+
   int tap_fd, option;
   int flags = IFF_TUN;
   char if_name[IFNAMSIZ] = "";
@@ -364,12 +364,25 @@ int main(int argc, char *argv[]) {
     do_debug("SERVER: Client connected from %s\n", inet_ntoa(remote.sin_addr));
   }
 
+
   /*
-    Key Exchange: Use "net_fd" to communicate
+    SSL & Key exchange
   */
+  init_ssl_ctx();
+  printf("%s side initializes ssl context properly\n", cliserv == SERVER ? "Server" : "Client");
+  // Both sides need certification
+  if (cliserv == SERVER)
+    configure_ssl_ctx("server.crt", "server.key");
+  else
+    configure_ssl_ctx("client.crt", "client.key");
+  printf("%s side configures ssl context properly\n", cliserv == SERVER ? "Server" : "Client");
+  // pass the previously built TCP connection's fd to init the ssl connection
+  init_ssl(net_fd);
+  My_SSL_Connect(cliserv);
+  end_ssl();
+  printf("SSL Already (successfully) ends\n");
 
-
-
+  return 0;
   
   /*
    UDP part
