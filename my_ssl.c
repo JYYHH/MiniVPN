@@ -72,12 +72,12 @@ int My_SSL_Connect(int cliserv){
   return 1;
 }
 
-void My_SSL_write(char *msg, int len){
-  SSL_write(ssl, msg, len);
+int My_SSL_write(char *msg, int len){
+  return SSL_write(ssl, msg, len);
 }
 
-void My_SSL_read(char *msg, int len){
-  SSL_read(ssl, msg, len);
+int My_SSL_read(char *msg, int len){
+  return SSL_read(ssl, msg, len);
 }
 
 void end_ssl(){

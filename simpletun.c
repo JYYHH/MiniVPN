@@ -384,8 +384,17 @@ int main(int argc, char *argv[]) {
         // tell the ServerUDP the virtual ip address
       cwrite(pipefd[1], (char *)&virtual_ip_number, 4);
       
-      // Blocking area... (TODO: client key alter)
-      My_SSL_read(buffer, 1); // impossible to read, just to block until client's crash..
+      // Server Key-IV Alter
+      while(1){
+        if (My_SSL_read((char *)key, 32) <= 0){
+          // Client is down
+          break;
+        }
+        My_SSL_read((char *)iv, 32);
+        cwrite(pipefd[1], (char *)key, 32);
+        cwrite(pipefd[1], (char *)iv, 32);
+        printf("ServerTCP: RE-Sets the key/iv = %lx/%lx OK\n", *((long int *)key), *((long int *)iv));
+      }
 
     // ------------------------ Server TCP ends ----------------------------------
       TCP_end(child_pid, pipefd);
@@ -429,8 +438,27 @@ int main(int argc, char *argv[]) {
         // tell the ServerUDP the virtual ip address
       cwrite(pipefd[1], (char *)&virtual_ip_number, 4);
 
-      // Blocking area... (TODO: client key alter)
-      My_SSL_read(buffer, 1); // impossible to read, just to block until client's crash..
+      // Client Key-IV Alter
+      int Type_opt;
+      while(scanf("%d", &Type_opt) == 1){
+        if (Type_opt == 0){
+          // change key
+          RAND_bytes((char *)key, 32);
+        }
+        else{
+          // change iv
+          RAND_bytes((char *)iv, 32);
+        }
+        cwrite(pipefd[1], (char *)key, 32);
+        cwrite(pipefd[1], (char *)iv, 32);
+        if(My_SSL_write((char *)key, 32) <= 0){
+          // Server is down
+          break;
+        }
+        My_SSL_write((char *)iv, 32);
+        printf("ClientTCP: RE-Sets the key/iv = %lx/%lx OK\n", *((long int *)key), *((long int *)iv));
+      }
+
     // ------------------------ Client TCP ends ----------------------------------
       TCP_end(child_pid, pipefd);
     }
@@ -446,6 +474,10 @@ int main(int argc, char *argv[]) {
   // read the key and iv from the TCP process
   cread(pipefd[0], (char *)key, 32);
   cread(pipefd[0], (char *)iv, 32);
+  /*
+    Here to init the encryption
+  */
+  init_AES();
   char *device_name = (cliserv == SERVER ? "Server" : "Client");
   printf("%sUDP: Sets the key/iv = %lx/%lx OK\n", device_name, *((long int *)key), *((long int *)iv));
     // recv port4udp from the TCP parent process
@@ -453,7 +485,10 @@ int main(int argc, char *argv[]) {
     // recv virtual_ip_number from the TCP parent process
   cread(pipefd[0], (char *)&virtual_ip_number, 4);
   printf("%sUDP: use port number %d\n", device_name, port4udp);
-    
+  
+  /*
+    Register for the virtual tap
+  */
     // now use virtual_ip_number to send a register to the server's guard process
   mqd_t mq_register = mq_open("/register", O_WRONLY);
   if (cliserv == SERVER){
@@ -492,12 +527,6 @@ int main(int argc, char *argv[]) {
     perror("bind()");
     exit(1);
   }
-
-
-  /*
-    Here to init the encryption
-  */
-  init_AES();
   
   /*
     Here we use the msg_queue from the guard process to simulate the virtual tap_fd
@@ -514,6 +543,7 @@ int main(int argc, char *argv[]) {
     maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
   else
     maxfd = (fake_tap > net_fd) ? fake_tap : net_fd;
+  maxfd = (pipefd[0] > maxfd) ? pipefd[0] : maxfd;
 
   while(1) {
     int ret;
@@ -525,6 +555,7 @@ int main(int argc, char *argv[]) {
     else 
       FD_SET(fake_tap, &rd_set);
     FD_SET(net_fd, &rd_set);
+    FD_SET(pipefd[0], &rd_set);
 
     ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
 
@@ -614,6 +645,15 @@ int main(int argc, char *argv[]) {
       else{
         printf("NET2TAP %lu: %d bytes from network are thrown away...\n", net2tap, nwrite);
       }
+    }
+
+    if (FD_ISSET(pipefd[0], &rd_set)){
+      // we should change the key/iv pair
+      cread(pipefd[0], (char *)key, 32);
+      cread(pipefd[0], (char *)iv, 32);
+        // re-init the encryption process
+      init_AES();
+      printf("%sUDP: RE-Sets the key/iv = %lx/%lx OK\n", device_name, *((long int *)key), *((long int *)iv));
     }
   }
   

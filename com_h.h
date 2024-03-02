@@ -49,8 +49,8 @@ void init_ssl_ctx();
 void configure_ssl_ctx(const char *crt_path, const char *key_path);
 void init_ssl(int socket_num);
 int My_SSL_Connect(int cliserv);
-void My_SSL_write(char *msg, int len);
-void My_SSL_read(char *msg, int len);
+int My_SSL_write(char *msg, int len);
+int My_SSL_read(char *msg, int len);
 void end_ssl();
 
 /*
