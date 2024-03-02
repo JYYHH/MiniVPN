@@ -37,30 +37,17 @@ int client_connect_2_server(int sock_, struct sockaddr_in *ntwk, char *remote_ip
   return sock_;
 }
 
-int server_wait_4_client(int sock_, struct sockaddr_in *ntwk1, struct sockaddr_in *ntwk2, socklen_t *ntwk_len_pt){
-  int optval = 1, ret;
-  if(setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
-    perror("setsockopt()");
-    exit(1);
-  }
-  if (bind(sock_, (struct sockaddr*) ntwk1, sizeof(*ntwk1)) < 0){
-    perror("bind()");
-    exit(1);
-  }
-  if (listen(sock_, 5) < 0){
-    perror("listen()");
-    exit(1);
-  }
-
-  *ntwk_len_pt = sizeof(*ntwk2);
-  memset(ntwk2, 0, *ntwk_len_pt);
+int server_wait_4_client(int sock_, struct sockaddr_in *ntwk, socklen_t *ntwk_len_pt){
+  int ret;
+  *ntwk_len_pt = sizeof(*ntwk);
+  memset(ntwk, 0, *ntwk_len_pt);
   // note that accept means the TCP server will not only provide a brand-new fd, 
     // but a new PORT to support the service as well.
-  if ((ret = accept(sock_, (struct sockaddr*) ntwk2, ntwk_len_pt)) < 0){
+  if ((ret = accept(sock_, (struct sockaddr*) ntwk, ntwk_len_pt)) < 0){
     perror("accept()");
     exit(1);
   }
-  do_debug("SERVER: Client connected from %s\n", inet_ntoa(ntwk2->sin_addr));
+  do_debug("SERVER: Client connected from %s\n", inet_ntoa(ntwk->sin_addr));
 
   return ret;
 }
@@ -101,7 +88,6 @@ void client_in_key_exchange(int net_fd, char *buffer){
   init_ssl(net_fd);
   My_SSL_Connect(CLIENT);
   // After building the SSL connection, we can directly exchange the key in a secure fashion
-  init_key_iv();
   
 // Client: send the key/iv to the server
   RAND_bytes(buffer, 32 * 2); // key + iv
@@ -113,4 +99,25 @@ void client_in_key_exchange(int net_fd, char *buffer){
   My_SSL_write(buffer, 32 * 2);
   // clear the buffer
   memset(buffer, 0, 32 * 2);
+}
+
+void routine_begin(int *pipe_fd){
+  init_key_iv();
+  if (pipe(pipe_fd) == -1){
+    perror("pipe");
+    exit(1);
+  }
+}
+
+void TCP_end(int child_pid, int *pipe_fd){
+  end_ssl();
+  if (kill(child_pid, SIGKILL) == -1) {
+    perror("kill");
+    exit(1);
+  }
+  int status;
+  waitpid(child_pid, &status, 0);
+  end_AES();
+  close(pipe_fd[1]);
+  exit(0);
 }

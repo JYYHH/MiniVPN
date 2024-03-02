@@ -109,9 +109,7 @@ int cwrite(int fd, char *buf, int n){
 int cread_udp(int fd, char *buf, int n, struct sockaddr_in *addr_pt, socklen_t *len_pt){
   
   int nread;
-
-  // printf("Recv from: %x\n", addr_pt->sin_addr.s_addr);
-
+  // printf("Recv from: %x\n", addr_pt->sin_addr.s_addr);      
   if((nread = recvfrom(
                 fd,
                 buf, 
@@ -175,7 +173,7 @@ int read_n_udp(int fd, char *buf, int n, struct sockaddr_in *addr_pt, socklen_t 
 
   while(left > 0) {
     if ((nread = cread_udp(fd, buf, left, addr_pt, len_pt))==0){
-      return 0 ;      
+      return 0;      
     }else {
       left -= nread;
       buf += nread;
@@ -227,6 +225,8 @@ void usage(void) {
   exit(1);
 }
 
+extern unsigned char *key, *iv;
+
 int main(int argc, char *argv[]) {
   int tap_fd, option;
   int flags = IFF_TUN;
@@ -238,16 +238,22 @@ int main(int argc, char *argv[]) {
   char buffer[BUFSIZE];
   struct sockaddr_in local, remote;
   char remote_ip[16] = "";
+  char virtual_ip[16] = "";
   unsigned short int port = PORT;
+  unsigned short int port4udp = PORTUDP;
   int sock_fd, net_fd, optval = 1, sock_TCP;
-  socklen_t remotelen;
+  socklen_t remotelen = 0; // need initialization...
+    // which bugs me over 6 hours...
   int cliserv = -1;    /* must be specified on cmd line */
   unsigned long int tap2net = 0, net2tap = 0;
+  int virtual_ip_number = 0; 
+    // This is used for server to distinguish different clients
+    // in network order
 
   progname = argv[0];
   
   /* Check command line options */
-  while((option = getopt(argc, argv, "i:sc:p:uahd")) > 0){
+  while((option = getopt(argc, argv, "i:sc:p:uahdv:")) > 0){
     switch(option) {
       case 'd':
         debug = 1;
@@ -274,6 +280,11 @@ int main(int argc, char *argv[]) {
       case 'a':
         flags = IFF_TAP;
         header_len = ETH_HDR_LEN;
+        break;
+      case 'v':
+        // only will be used by the client to specify it's own virtual ip
+        strncpy(virtual_ip,optarg,15);
+        virtual_ip_number = inet_addr(virtual_ip);
         break;
       default:
         my_err("Unknown option %c\n", option);
@@ -308,92 +319,148 @@ int main(int argc, char *argv[]) {
 
   do_debug("Successfully connected to interface %s\n", if_name);
 
-  // Before each process's starting, we should allocate the memory for the key and iv, 
-    //because they'll be seperated into different process and belongs to different address.
-  init_key_iv();
-
   int pipefd[2]; // be used to Communicate between TCP process and UDP process
-  if (pipe(pipefd) == -1){
-    perror("pipe");
-    exit(1);
-  }
 
-  int child_pid = fork();
-  if (child_pid > 0){
-    // we are in father process
-      // close the read pipe fd, cause the father does not need the child's feedback (lol)
-    close(pipefd[0]);
-
-    /*
-      typical TCP routine
-    */
-    if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+  if (cliserv == SERVER){
+  // ------------------------ Server Routine begins ----------------------------------
+    // build a TCP socket
+    if ((sock_TCP = socket(AF_INET, SOCK_STREAM, 0)) < 0){
       perror("socket()");
       exit(1);
     }
     set_sockaddr(&local, htonl(INADDR_ANY), htons(port));
-    if (cliserv == CLIENT){
+    if(setsockopt(sock_TCP, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
+      perror("setsockopt()");
+      exit(1);
+    }
+    // bind and listen
+    if (bind(sock_TCP, (struct sockaddr*) &local, sizeof(local)) < 0){
+      perror("bind()");
+      exit(1);
+    }
+    if (listen(sock_TCP, 5) < 0){
+      perror("listen()");
+      exit(1);
+    }
+
+    // Waiting for the client coming
+    while(net_fd = server_wait_4_client(sock_TCP, &remote, &remotelen)){
+      if (fork() == 0)
+        break; // child process break, father process stay in while to continue listening
+      // the father process will be always here, unless we send signals to it
+        // but the TCP and UDP subprocesses will be quited automatically if we terminate the client
+      port4udp--; // this ensure the udp ports won't collide..
+    }
+
+    // Now here, net_fd and remote are both of the present connected client
+    // And all below are the resources which the server needs to recycle (when client crashes)...
+    close(sock_TCP); // this is serving process, does not need to listen
+    routine_begin(pipefd);
+    int child_pid = fork();
+    if (child_pid > 0){
+    // ------------------------ Server TCP begins ----------------------------------
+      // we are in father process
+        // close the read pipe fd, cause the father does not need the child's feedback (lol)
+      close(pipefd[0]);
+      // exchange key
+      server_in_key_exchange(net_fd, buffer);
+        // tell the ServerUDP the key/iv
+      printf("TCP (Server): %lx %lx\n", *((long int *)key), *((long int *)iv));
+      cwrite(pipefd[1], (char *)key, 32);
+      cwrite(pipefd[1], (char *)iv, 32);
+        // tell the ServerUDP the port_number
+      cwrite(pipefd[1], (char *)&port4udp, 2);
+        // tell the ClientTCP the port_number
+      My_SSL_write((char *)&port4udp, 2);
+        // recv the ClientTCP's virtual ip address
+      My_SSL_read((char *)&virtual_ip_number, 4);
+        // tell the ServerUDP the virtual ip address
+      cwrite(pipefd[1], (char *)&virtual_ip_number, 4);
+      
+      // Blocking area... (TODO: client key alter)
+      My_SSL_read(buffer, 1); // impossible to read, just to block until client's crash..
+
+    // ------------------------ Server TCP ends ----------------------------------
+      TCP_end(child_pid, pipefd);
+    }
+  // ------------------------ Server Routine ends ----------------------------------
+  }
+  else {
+  // ------------------------ Client Routine begins ----------------------------------
+    routine_begin(pipefd);
+    int child_pid = fork();
+    if (child_pid > 0){
+    // ------------------------ Client TCP begins ----------------------------------
+      // we are in father process
+        // close the read pipe fd, cause the father does not need the child's feedback (lol)
+      close(pipefd[0]);
+
+      if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+        perror("socket()");
+        exit(1);
+      }
+      // Client is easy, just need to connect to the only server.
       net_fd = client_connect_2_server(
         sock_fd,
         &remote,
         remote_ip,
         port
       );
-    }else{
-      net_fd = server_wait_4_client(
-        sock_fd,
-        &local,
-        &remote,
-        &remotelen
-      );
-    }
 
-    // SERVER: tell the child the remote address of client
-    if (cliserv == SERVER)
-      cwrite(pipefd[1], (char *)&remote, sizeof(remote));
-    
-    // Key exachange
-    if (cliserv == CLIENT)
+      // exchange key
       client_in_key_exchange(net_fd, buffer);
-    else 
-      server_in_key_exchange(net_fd, buffer);
-    
-    // Blocking area...
-    My_SSL_read(buffer, 1); // impossible to read, just to block until client's crash..
+      // send to the UDP process
+      printf("TCP (Client): %lx %lx\n", *((long int *)key), *((long int *)iv));
+      cwrite(pipefd[1], (char *)key, 32);
+      cwrite(pipefd[1], (char *)iv, 32);
+        // ServerTCP will tell this ClientTCP the exact port number of UDP connection
+      My_SSL_read((char *)&port4udp, 2);
+        // ClientTCP will tell this ServerTCP the exact virtual ip address of itself
+      My_SSL_write((char *)&virtual_ip_number, 4);
+        // Then tell the ClientUDP the port_number
+      cwrite(pipefd[1], (char *)&port4udp, 2);
+        // tell the ServerUDP the virtual ip address
+      cwrite(pipefd[1], (char *)&virtual_ip_number, 4);
 
-    if (cliserv == SERVER){
-      end_ssl();
-      if (kill(child_pid, SIGKILL) == -1) {
-        perror("kill");
-        exit(1);
-      }
-      int status;
-      waitpid(child_pid, &status, 0);
+      // Blocking area... (TODO: client key alter)
+      My_SSL_read(buffer, 1); // impossible to read, just to block until client's crash..
+    // ------------------------ Client TCP ends ----------------------------------
+      TCP_end(child_pid, pipefd);
     }
-
-    return 0;
+  // ------------------------ Client Routine ends ----------------------------------
   }
   
   /*
-   UDP part
+   UDP part, Client and Server sides are similar..
   */
   // we are in child process
     // close the write pipe fd, cause the child has no right to talk to father (lol)
   close(pipefd[1]);
+  // read the key and iv from the TCP process
+  cread(pipefd[0], (char *)key, 32);
+  cread(pipefd[0], (char *)iv, 32);
+  printf("UDP: %lx %lx\n", *((long int *)key), *((long int *)iv));
+    // recv port4udp from the TCP parent process
+  cread(pipefd[0], (char *)&port4udp, 2);
+    // recv virtual_ip_number from the TCP parent process
+  cread(pipefd[0], (char *)&virtual_ip_number, 4);
+  printf("UDP: use port number %d\n", port4udp);
   
   if ((sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0){
     perror("socket()");
     exit(1);
   }
-  set_sockaddr(&local, htonl(INADDR_ANY), htons(PORTUDP));
+  set_sockaddr(&local, htonl(INADDR_ANY), htons(port4udp));
 
-  if (cliserv == CLIENT)
-    set_sockaddr(&remote, inet_addr(remote_ip), htons(PORTUDP));
-  else{
-    cread(pipefd[0], (char *)&remote, sizeof(remote));
-    // recover the original port for the UDP usage, because it's already modified by the TCP / TCP&UDP don't use same port
-    remote.sin_port = htons(PORTUDP);
+  if (cliserv == CLIENT){
+    set_sockaddr(&remote, inet_addr(remote_ip), htons(port4udp));
   }
+  else{
+    // cread(pipefd[0], (char *)&remote, sizeof(remote));
+    // recover the original port for the UDP usage, because it's already modified by the TCP / TCP&UDP don't use same port
+    remote.sin_port = htons(port4udp);
+  }
+
 
   net_fd = sock_fd;
   if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0){
@@ -416,6 +483,7 @@ int main(int argc, char *argv[]) {
 
   while(1) {
     int ret;
+    int src_ip, dst_ip;
     fd_set rd_set;
 
     FD_ZERO(&rd_set);
@@ -445,6 +513,12 @@ int main(int argc, char *argv[]) {
       do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", tap2net, nread);
 
       // encrypt & hash_append
+      src_ip = *((int *)(buffer + 12)), dst_ip = *((int *)(buffer + 16));
+      // printf("%x %x %x %x %x %x\n", *((int *)(buffer + 0)), *((int *)(buffer + 4)), *((int *)(buffer + 8)), *((int *)(buffer + 12)), *((int *)(buffer + 16)), virtual_ip_number);
+      if (cliserv == SERVER && dst_ip != virtual_ip_number)
+        continue;
+      // printf("%x %x %x %x %x\n", *((int *)(buffer + 0)), *((int *)(buffer + 4)), *((int *)(buffer + 8)), *((int *)(buffer + 12)), *((int *)(buffer + 16)));
+
       aes_encrypt(buffer, &nread);
         // nread at most increases 32 here
       append_HASH(buffer, &nread);
@@ -458,7 +532,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (FD_ISSET(net_fd, &rd_set)){
-      /* data from the network:
+      /* data from the network: (won't be multiplex in a wrong way, the different port number ensures this.)
         first read it
         then check whether the hash is right, together with decrypting,
         finally write it into tun/tap
@@ -490,6 +564,8 @@ int main(int argc, char *argv[]) {
       }
       aes_decrypt(buffer, &nread);
 
+      // printf("%x %x %x %x %x\n", *((int *)(buffer + 0)), *((int *)(buffer + 4)), *((int *)(buffer + 8)), *((int *)(buffer + 12)), *((int *)(buffer + 16)));
+
       if (whether_loss_pkg == 0){
         /* write into tun/tap */ 
         nwrite = cwrite(tap_fd, buffer, nread);
@@ -501,6 +577,7 @@ int main(int argc, char *argv[]) {
     }
   }
   
+  close(pipefd[0]); // close all the pipe file descriptors
   end_AES();
   return(0);
 }
