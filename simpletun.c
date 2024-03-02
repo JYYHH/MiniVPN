@@ -323,6 +323,13 @@ int main(int argc, char *argv[]) {
 
   if (cliserv == SERVER){
   // ------------------------ Server Routine begins ----------------------------------
+    if (fork() > 0){
+      // Server guard: register of tunnel process & transfer tap's msg
+        // Server side, using "POSIX Message Queue" to transfer msg from tun into UDP subprocesses
+        // Also listen for the register
+      server_guard_process(tap_fd, buffer);
+    }
+
     // build a TCP socket
     if ((sock_TCP = socket(AF_INET, SOCK_STREAM, 0)) < 0){
       perror("socket()");
@@ -365,7 +372,7 @@ int main(int argc, char *argv[]) {
       // exchange key
       server_in_key_exchange(net_fd, buffer);
         // tell the ServerUDP the key/iv
-      printf("TCP (Server): %lx %lx\n", *((long int *)key), *((long int *)iv));
+      printf("ServerTCP: Sets the key/iv = %lx/%lx OK\n", *((long int *)key), *((long int *)iv));
       cwrite(pipefd[1], (char *)key, 32);
       cwrite(pipefd[1], (char *)iv, 32);
         // tell the ServerUDP the port_number
@@ -410,7 +417,7 @@ int main(int argc, char *argv[]) {
       // exchange key
       client_in_key_exchange(net_fd, buffer);
       // send to the UDP process
-      printf("TCP (Client): %lx %lx\n", *((long int *)key), *((long int *)iv));
+      printf("ClientTCP: Sets the key/iv = %lx/%lx OK\n", *((long int *)key), *((long int *)iv));
       cwrite(pipefd[1], (char *)key, 32);
       cwrite(pipefd[1], (char *)iv, 32);
         // ServerTCP will tell this ClientTCP the exact port number of UDP connection
@@ -439,12 +446,26 @@ int main(int argc, char *argv[]) {
   // read the key and iv from the TCP process
   cread(pipefd[0], (char *)key, 32);
   cread(pipefd[0], (char *)iv, 32);
-  printf("UDP: %lx %lx\n", *((long int *)key), *((long int *)iv));
+  char *device_name = (cliserv == SERVER ? "Server" : "Client");
+  printf("%sUDP: Sets the key/iv = %lx/%lx OK\n", device_name, *((long int *)key), *((long int *)iv));
     // recv port4udp from the TCP parent process
   cread(pipefd[0], (char *)&port4udp, 2);
     // recv virtual_ip_number from the TCP parent process
   cread(pipefd[0], (char *)&virtual_ip_number, 4);
-  printf("UDP: use port number %d\n", port4udp);
+  printf("%sUDP: use port number %d\n", device_name, port4udp);
+    
+    // now use virtual_ip_number to send a register to the server's guard process
+  mqd_t mq_register = mq_open("/register", O_WRONLY);
+  if (cliserv == SERVER){
+    //... ServerUDP subprocess does the register
+    mq_send(mq_register, (char *)&virtual_ip_number, 4, 1);
+    printf("ServerUDP prcess which serves IP (%d.%d.%d.%d) sends a register application to the GUARD process!\n", 
+            (virtual_ip_number >> 0) & 255, 
+            (virtual_ip_number >> 8) & 255, 
+            (virtual_ip_number >> 16) & 255, 
+            (virtual_ip_number >> 24) & 255
+          );
+  }
   
   if ((sock_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0){
     perror("socket()");
@@ -478,16 +499,32 @@ int main(int argc, char *argv[]) {
   */
   init_AES();
   
+  /*
+    Here we use the msg_queue from the guard process to simulate the virtual tap_fd
+  */
+  mqd_t fake_tap;
+  if (cliserv == SERVER){
+    char tmp[27] = "/server_";
+    sprintf(tmp + 8, "%d", virtual_ip_number);
+    fake_tap = mq_open(tmp, O_RDONLY);
+  }
+  
   /* use select() to handle two descriptors at once */
-  maxfd = (tap_fd > net_fd)?tap_fd:net_fd;
+  if (cliserv == CLIENT)
+    maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
+  else
+    maxfd = (fake_tap > net_fd) ? fake_tap : net_fd;
 
   while(1) {
     int ret;
-    int src_ip, dst_ip;
     fd_set rd_set;
 
     FD_ZERO(&rd_set);
-    FD_SET(tap_fd, &rd_set); FD_SET(net_fd, &rd_set);
+    if (cliserv == CLIENT)
+      FD_SET(tap_fd, &rd_set); 
+    else 
+      FD_SET(fake_tap, &rd_set);
+    FD_SET(net_fd, &rd_set);
 
     ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
 
@@ -500,7 +537,7 @@ int main(int argc, char *argv[]) {
       exit(1);
     }
 
-    if (FD_ISSET(tap_fd, &rd_set)){
+    if ((cliserv == CLIENT && FD_ISSET(tap_fd, &rd_set)) || (cliserv == SERVER && FD_ISSET(fake_tap, &rd_set))){
       /* data from tun/tap:
           first read it,
           then encrypt it, together with hashing-append,
@@ -508,17 +545,18 @@ int main(int argc, char *argv[]) {
       */
       
       // read
-      nread = cread(tap_fd, buffer, BUFSIZE);
+      if (cliserv == CLIENT)
+        nread = cread(tap_fd, buffer, BUFSIZE);
+      else{
+        nread = mq_receive(fake_tap, buffer, BUFSIZE * 5, NULL);
+      }
       tap2net++;
-      do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", tap2net, nread);
+      if (cliserv == CLIENT)  
+        do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n", tap2net, nread);
+      else 
+        do_debug("Server MSQ2NET %lu: Read %d bytes from msg_queue\n", tap2net, nread);
 
       // encrypt & hash_append
-      src_ip = *((int *)(buffer + 12)), dst_ip = *((int *)(buffer + 16));
-      // printf("%x %x %x %x %x %x\n", *((int *)(buffer + 0)), *((int *)(buffer + 4)), *((int *)(buffer + 8)), *((int *)(buffer + 12)), *((int *)(buffer + 16)), virtual_ip_number);
-      if (cliserv == SERVER && dst_ip != virtual_ip_number)
-        continue;
-      // printf("%x %x %x %x %x\n", *((int *)(buffer + 0)), *((int *)(buffer + 4)), *((int *)(buffer + 8)), *((int *)(buffer + 12)), *((int *)(buffer + 16)));
-
       aes_encrypt(buffer, &nread);
         // nread at most increases 32 here
       append_HASH(buffer, &nread);
@@ -527,8 +565,10 @@ int main(int argc, char *argv[]) {
       plength = htons(nread);
       nwrite = cwrite_udp(net_fd, (char *)&plength, sizeof(plength), &remote, &remotelen);
       nwrite = cwrite_udp(net_fd, buffer, nread, &remote, &remotelen);
-      
-      do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net, nwrite);
+      if (cliserv == CLIENT)
+        do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net, nwrite);
+      else
+        do_debug("Server MSQ2NET %lu: Write %d bytes to the network\n", tap2net, nwrite);
     }
 
     if (FD_ISSET(net_fd, &rd_set)){

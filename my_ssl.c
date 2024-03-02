@@ -45,8 +45,9 @@ void configure_ssl_ctx(const char *crt_path, const char *key_path){
 
 void init_ssl(int socket_num){
   ssl = SSL_new(ctx);
-  printf("Status of SSL_set_fd = %d\n", SSL_set_fd(ssl, socket_num));
-  printf("FD assigned to this SSL: %d / My net_fd: %d\n", SSL_get_fd(ssl), socket_num);
+  SSL_set_fd(ssl, socket_num);
+  // printf("Status of SSL_set_fd = %d\n", SSL_set_fd(ssl, socket_num));
+  // printf("FD assigned to this SSL: %d / My net_fd: %d\n", SSL_get_fd(ssl), socket_num);
 }
 
 int My_SSL_Connect(int cliserv){
@@ -60,10 +61,13 @@ int My_SSL_Connect(int cliserv){
   }
   else{
     int verify_result_of_x = (SSL_get_verify_result(ssl) == X509_V_OK);
-    if (cliserv == SERVER)
-      printf("Whether Server already verified the Certification of Client: %d (1 is yes/ 0 is no)\n", verify_result_of_x);
-    else 
-      printf("Whether Client already verified the Certification of Server: %d (1 is yes/ 0 is no)\n", verify_result_of_x);
+    // if (cliserv == SERVER)
+    //   printf("Whether Server already verified the Certification of Client: %d (1 is yes/ 0 is no)\n", verify_result_of_x);
+    // else 
+    //   printf("Whether Client already verified the Certification of Server: %d (1 is yes/ 0 is no)\n", verify_result_of_x);
+    if (!verify_result_of_x){
+      return 0;
+    }
   }
   return 1;
 }

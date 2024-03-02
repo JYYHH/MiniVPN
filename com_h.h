@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <mqueue.h>
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000   
@@ -55,10 +56,6 @@ void end_ssl();
 /*
     Begin of My Network
 */
-// void set_sockaddr(struct sockaddr_in *ntwk, const int ip_net, const unsigned short int port_net);
-// int client_connect_2_server(int sock_, struct sockaddr_in *ntwk, char *remote_ip, const unsigned short int port);
-// int server_wait_4_client(int sock_, struct sockaddr_in *ntwk, socklen_t *ntwk_len_pt);
-// void server_in_key_exchange(int net_fd, int *buffer);
-// void client_in_key_exchange(int net_fd, int *buffer);
+
 
 
