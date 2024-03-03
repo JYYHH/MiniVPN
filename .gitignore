@@ -4,6 +4,6 @@ demoCA/
 *.crt
 *.csr
 *.cnf
-*.md
+report.md
 test_aes.c
 test_mac.c 
