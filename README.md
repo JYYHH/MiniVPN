@@ -6,6 +6,11 @@
 - Compile: type `make`
 - Clean-up: type `make clean`
 
+### 1.1 Security Implementation
+1. Confidential: OpenSSL AES-256 CBC Mode
+2. Integrity: OpenSSL HMAC-SHA256 Hashing Function
+3. Authenticity: Set-up a local CA (related files are kept locally and not uploaded onto GitHub)
+
 ## 2. Running Demo (Multiple VPN Tunnels)
 ### 2.1 Set up the tunnels
 - Suppose you have 4 VMs running under the same local network(`192.168.15.0/24`), they are:
@@ -30,6 +35,8 @@
     - Type `sudo su`
     - Type `sudo ./simpletun -i tun0 -c 192.168.15.4 -d -v 10.0.4.1` to start the client tun0 on `192.168.15.8` (virtual ip address `10.0.4.1`)
     - Then in another window (or you can make the script above running in the backgroung), type `bash forth.sh` to configure tun0's virtual ip address and the local route table
+
+- __Note that you can enter `0\n` (change session key randomly) or `1\n` (change session iv (for encryption)) on the client side in the same terminal of `./simpletun ...`.__
 
 ### 2.2 Use the (bi-direction) tunnels
 - Now, everything is done!
