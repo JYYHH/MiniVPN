@@ -11,6 +11,8 @@
 2. Integrity: OpenSSL HMAC-SHA256 Hashing Function
 3. Authenticity: Set-up a local CA (related files are kept locally and not uploaded onto GitHub)
 
+- `Authenticated Encryption`: use `Encrypt-then-MAC` method (as shown in slides)
+
 ## 2. Running Demo (Multiple VPN Tunnels)
 ### 2.1 Set up the tunnels
 - Suppose you have 4 VMs running under the same local network(`192.168.15.0/24`), they are:
